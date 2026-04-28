@@ -26,7 +26,7 @@ rbf() {
     return 1
   fi
 
-  sudo git add -A
+  sudo git add .
   sudo git update-index --refresh
 
   if [[ "$do_update" == true ]]; then
