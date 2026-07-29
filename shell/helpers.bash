@@ -2,27 +2,42 @@
 # NixOS Flake Rebuild Tool
 # ==============================================================================
 rbf() {
-  local actions=() extra_args=() user_specified_action=false do_update=false do_update_only=false do_fmt=false do_push=false hostname="" impure_flag=""
+  local actions=() extra_args=() user_specified_action=false
+  local do_update=false do_update_only=false do_fmt=false do_push=false
+  local hostname="" impure_flag="--impure"
+  local config_dir="" dir_owner use_sudo_for_local=false is_git=false
+  local real_user git_env_flags files msg target_link gen action
+  local success=true flake_path="."
+
+  usage() {
+    cat << 'EOF'
+rbf - NixOS Flake Rebuild Tool
+
+Usage: rbf [action] [options] [-- extra_args]
+
+Actions:
+  boot|switch|test        NixOS rebuild action to perform (default: boot)
+
+Options:
+  -h, --help               Show this help message
+  --up, --update-all       Update all flake inputs before rebuilding
+  --up-only, --update-only Quickly update flake inputs and exit
+  --p, --push              Push git commits to remote after successful rebuild
+  --fmt, --format          Run 'nix fmt' in the flake directory before rebuilding
+  --hostname <name>        Specify a specific hostname configuration from the flake
+
+Extra arguments are passed to 'nixos-rebuild'.
+EOF
+  }
+
+  fail() {
+    echo "🛑 $*" >&2
+  }
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
-      echo "rbf - NixOS Flake Rebuild Tool"
-      echo ""
-      echo "Usage: rbf [action] [options] [-- extra_args]"
-      echo ""
-      echo "Actions:"
-      echo "  boot|switch|test        NixOS rebuild action to perform (default: boot)"
-      echo ""
-      echo "Options:"
-      echo "  -h, --help               Show this help message"
-      echo "  --up, --update-all       Update all flake inputs before rebuilding"
-      echo "  --up-only, --update-only Quickly update flake inputs and exit"
-      echo "  --p, --push              Push git commits to remote after successful rebuild"
-      echo "  --fmt, --format          Run 'nix fmt' in the flake directory before rebuilding"
-      echo "  --hostname <name>        Specify a specific hostname configuration from the flake"
-      echo ""
-      echo "Extra arguments are passed to 'nixos-rebuild'."
+      usage
       return 0
       ;;
     boot | switch | test)
@@ -47,8 +62,19 @@ rbf() {
       shift
       ;;
     --hostname)
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        fail "Missing value for --hostname"
+        return 1
+      fi
       hostname="$2"
       shift 2
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        extra_args+=("$1")
+        shift
+      done
       ;;
     *)
       extra_args+=("$1")
@@ -57,15 +83,10 @@ rbf() {
     esac
   done
 
-  # Default to boot if no action was explicitly passed
   if [[ "$user_specified_action" == false ]]; then
     actions+=("boot")
   fi
 
-  # Default to --impure automatically
-  impure_flag="--impure"
-
-  local config_dir=""
   for dir in "." "/etc/nixos"; do
     if [[ -f "$dir/flake.nix" ]]; then
       config_dir="$dir"
@@ -74,70 +95,68 @@ rbf() {
   done
 
   if [[ -z "$config_dir" ]]; then
-    echo "🛑 Could not find a NixOS flake directory." >&2
+    fail "Could not find a NixOS flake directory."
     return 1
   fi
 
-  local dir_owner
   dir_owner=$(stat -c "%U" "$config_dir")
-  local use_sudo_for_local=false
-
   if [[ "$dir_owner" == "root" && "$EUID" -ne 0 ]]; then
     echo "ℹ️  Flake directory '$config_dir' is owned by root. Using 'sudo' for local modifications."
     use_sudo_for_local=true
   fi
 
   local_cmd() {
-    if [[ "$use_sudo_for_local" == true ]]; then sudo "$@"; else "$@"; fi
+    if [[ "$use_sudo_for_local" == true ]]; then
+      sudo "$@"
+    else
+      "$@"
+    fi
   }
 
   pushd "$config_dir" > /dev/null || return 1
+  trap 'popd > /dev/null' RETURN
 
-  local is_git=false
-  if local_cmd git rev-parse --is-inside-work-tree &> /dev/null; then
+  if local_cmd git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     is_git=true
     local_cmd git add -A
   else
-    echo "🛑 Not a git repository. Continuing anyway.."
+    echo "🛑 Not a git repository. Continuing anyway..."
   fi
 
-  # Handle formatting first if requested
   if [[ "$do_fmt" == true ]]; then
     echo "Formatting files..."
     local_cmd nix fmt
     [[ "$is_git" == true ]] && local_cmd git add -A
   fi
 
-  # Handle flake update if requested
   if [[ "$do_update" == true || "$do_update_only" == true ]]; then
     echo "Updating all flake inputs..."
     local_cmd nix flake update
     [[ "$is_git" == true ]] && local_cmd git add -A
   fi
 
-  # Standalone check: Exit early if the user only wanted to format or update without rebuilding
-  if [[ "$user_specified_action" == false && ( "$do_fmt" == true || "$do_update_only" == true ) ]]; then
+  if [[ "$user_specified_action" == false && ("$do_fmt" == true || "$do_update_only" == true) ]]; then
     echo "✅ Success!"
-    popd > /dev/null || return 1
     return 0
   fi
 
-  local real_user=${SUDO_USER:-$USER}
-  local git_env_flags=(-c "user.name=$real_user" -c "user.email=$real_user@$(hostname)")
+  real_user=${SUDO_USER:-$USER}
+  git_env_flags=(-c "user.name=$real_user" -c "user.email=$real_user@$(hostname)")
 
   if [[ "$is_git" == true ]] && ! local_cmd git diff --cached --quiet; then
-    local files=$(local_cmd git diff --cached --name-only | paste -sd ", " -)
-    local msg="Pre-rebuild (${actions[*]}): $files"
+    files=$(local_cmd git diff --cached --name-only | paste -sd ", " -)
+    msg="Pre-rebuild (${actions[*]}): $files"
     echo "Committing changes: $msg"
     local_cmd git "${git_env_flags[@]}" commit -m "$msg" > /dev/null
   fi
 
-  local success=true flake_path="."
-  [[ -n "$hostname" ]] && flake_path=".#$hostname"
+  if [[ -n "$hostname" ]]; then
+    flake_path=".#$hostname"
+  fi
 
   for action in "${actions[@]}"; do
     echo "Executing NixOS $action..."
-    sudo nixos-rebuild "$action" --flake "$flake_path" ${impure_flag} "${extra_args[@]}" || {
+    sudo nixos-rebuild "$action" --flake "$flake_path" "$impure_flag" "${extra_args[@]}" || {
       success=false
       break
     }
@@ -145,8 +164,8 @@ rbf() {
 
   if [[ "$success" == true ]]; then
     if [[ "$is_git" == true ]]; then
-      local target_link=$(readlink /nix/var/nix/profiles/system)
-      local gen="?"
+      target_link=$(readlink /nix/var/nix/profiles/system 2> /dev/null || true)
+      gen="?"
       [[ "$target_link" =~ system-([0-9]+)-link ]] && gen="${BASH_REMATCH[1]}"
       local_cmd git "${git_env_flags[@]}" commit --amend -m "Gen $gen (${actions[*]}): finalized" > /dev/null 2>&1
 
@@ -161,13 +180,12 @@ rbf() {
     fi
   else
     echo "🛑 Aborted."
-    if [[ "$is_git" == true && $(local_cmd git log -1 --pretty=%s) == Pre-rebuild* ]]; then
+    if [[ "$is_git" == true ]] && local_cmd git log -1 --pretty=%s | grep -q '^Pre-rebuild'; then
       echo "🔙 Rolling back temporary Git commit..."
       local_cmd git reset --soft HEAD~1
     fi
   fi
 
-  popd > /dev/null || return 1
   [[ "$success" == true ]]
 }
 
