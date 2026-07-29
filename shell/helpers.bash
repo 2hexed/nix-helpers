@@ -2,7 +2,7 @@
 # NixOS Flake Rebuild Tool
 # ==============================================================================
 rbf() {
-  local actions=() extra_args=() do_update=false do_update_only=false do_fmt=false hostname="" impure_flag=""
+  local actions=() extra_args=() user_specified_action=false do_update=false do_update_only=false do_fmt=false do_push=false hostname="" impure_flag=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -12,20 +12,22 @@ rbf() {
       echo "Usage: rbf [action] [options] [-- extra_args]"
       echo ""
       echo "Actions:"
-      echo "  boot|switch|test        NixOS rebuild action to perform (default: switch)"
+      echo "  boot|switch|test        NixOS rebuild action to perform (default: boot)"
       echo ""
       echo "Options:"
-      echo "  -h, --help              Show this help message"
-      echo "  --up, --update-all      Update all flake inputs before rebuilding"
+      echo "  -h, --help               Show this help message"
+      echo "  --up, --update-all       Update all flake inputs before rebuilding"
       echo "  --up-only, --update-only Quickly update flake inputs and exit"
-      echo "  --fmt, --format         Run 'local_cmd nix fmt' in the flake directory before rebuilding"
-      echo "  --hostname <name>       Specify a specific hostname configuration from the flake"
+      echo "  --p, --push              Push git commits to remote after successful rebuild"
+      echo "  --fmt, --format          Run 'nix fmt' in the flake directory before rebuilding"
+      echo "  --hostname <name>        Specify a specific hostname configuration from the flake"
       echo ""
       echo "Extra arguments are passed to 'nixos-rebuild'."
       return 0
       ;;
     boot | switch | test)
       actions+=("$1")
+      user_specified_action=true
       shift
       ;;
     --up | --update-all)
@@ -38,7 +40,10 @@ rbf() {
       ;;
     --fmt | --format)
       do_fmt=true
-      [[ ! " ${extra_args[*]} " =~ " --impure " ]] && impure_flag="--impure"
+      shift
+      ;;
+    --p | --push)
+      do_push=true
       shift
       ;;
     --hostname)
@@ -52,7 +57,13 @@ rbf() {
     esac
   done
 
-  [[ ${#actions[@]} -eq 0 ]] && actions+=("switch")
+  # Default to boot if no action was explicitly passed
+  if [[ "$user_specified_action" == false ]]; then
+    actions+=("boot")
+  fi
+
+  # Default to --impure automatically
+  impure_flag="--impure"
 
   local config_dir=""
   for dir in "." "/etc/nixos"; do
@@ -63,7 +74,7 @@ rbf() {
   done
 
   if [[ -z "$config_dir" ]]; then
-    echo "❌ Error: Could not find a NixOS flake directory." >&2
+    echo "🛑 Could not find a NixOS flake directory." >&2
     return 1
   fi
 
@@ -87,34 +98,35 @@ rbf() {
     is_git=true
     local_cmd git add -A
   else
-    echo "Not a git repository. Continuing anyway.."
+    echo "🛑 Not a git repository. Continuing anyway.."
   fi
 
-  if [[ "$do_update_only" == true ]]; then
-    echo "Updating all flake inputs..."
-    local_cmd nix flake update
-    [[ "$is_git" == true ]] && local_cmd git add -A
-    popd > /dev/null || return 1
-    return 0
-  fi
-
+  # Handle formatting first if requested
   if [[ "$do_fmt" == true ]]; then
     echo "Formatting files..."
     local_cmd nix fmt
     [[ "$is_git" == true ]] && local_cmd git add -A
   fi
 
-  if [[ "$do_update" == true ]]; then
+  # Handle flake update if requested
+  if [[ "$do_update" == true || "$do_update_only" == true ]]; then
     echo "Updating all flake inputs..."
     local_cmd nix flake update
     [[ "$is_git" == true ]] && local_cmd git add -A
+  fi
+
+  # Standalone check: Exit early if the user only wanted to format or update without rebuilding
+  if [[ "$user_specified_action" == false && ( "$do_fmt" == true || "$do_update_only" == true ) ]]; then
+    echo "✅ Success!"
+    popd > /dev/null || return 1
+    return 0
   fi
 
   local real_user=${SUDO_USER:-$USER}
   local git_env_flags=(-c "user.name=$real_user" -c "user.email=$real_user@$(hostname)")
 
   if [[ "$is_git" == true ]] && ! local_cmd git diff --cached --quiet; then
-    local files=$(local_cmd git diff --cached --name-only | paste -sd "," -)
+    local files=$(local_cmd git diff --cached --name-only | paste -sd ", " -)
     local msg="Pre-rebuild (${actions[*]}): $files"
     echo "Committing changes: $msg"
     local_cmd git "${git_env_flags[@]}" commit -m "$msg" > /dev/null
@@ -137,14 +149,20 @@ rbf() {
       local gen="?"
       [[ "$target_link" =~ system-([0-9]+)-link ]] && gen="${BASH_REMATCH[1]}"
       local_cmd git "${git_env_flags[@]}" commit --amend -m "Gen $gen (${actions[*]}): finalized" > /dev/null 2>&1
-      echo "✅ Rebuild successful. Generation $gen is now active."
+
+      if [[ "$do_push" == true ]]; then
+        echo "Pushing changes to remote git repository..."
+        local_cmd git push || echo "⚠️ Warning: Git push failed, but build succeeded."
+      fi
+
+      echo "✅ Success! Generation $gen is now active."
     else
-      echo "✅ Rebuild successful (No Git history to update)."
+      echo "✅ Success! (No Git history to update)."
     fi
   else
-    echo "❌ Rebuild failed."
+    echo "🛑 Aborted."
     if [[ "$is_git" == true && $(local_cmd git log -1 --pretty=%s) == Pre-rebuild* ]]; then
-      echo "Rolling back temporary Git commit..."
+      echo "🔙 Rolling back temporary Git commit..."
       local_cmd git reset --soft HEAD~1
     fi
   fi
@@ -175,7 +193,7 @@ ytmd-legacy() {
   done
 
   if [ -z "$url" ]; then
-    echo "Error: Please provide a YouTube URL."
+    echo "🛑 Please provide a YouTube URL."
     echo "Usage: ytmd-legacy <URL> [--format <format>]"
     return 1
   fi
