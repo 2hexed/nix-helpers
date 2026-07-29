@@ -43,6 +43,7 @@ _rbf_completion() {
     --update-only
     --fmt
     --format
+    --p
     --push
     --hostname
     --show-trace
