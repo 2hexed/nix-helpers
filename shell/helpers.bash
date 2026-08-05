@@ -190,6 +190,27 @@ EOF
 }
 
 # ==============================================================================
+# Get IP Addresses of Active Network Interfaces
+# ==============================================================================
+
+whatsmyip() {
+    local cyan='\033[1;36m'
+    local reset='\033[0m'
+
+    # Removed 'scope global' to allow showing link-local addresses if needed
+    ip -brief addr show | awk -v c_cyan="$cyan" -v c_reset="$reset" '
+        $1 ~ /^(lo|docker|veth|br-|vboxnet|virbr|tailscale|tun|tap|wireguard|wg)/ { next }
+        $2 ~ /^UP/ && NF >= 3 {
+            printf "%s> %s%s\n", c_cyan, $1, c_reset
+            for (i = 3; i <= NF; i++) {
+                family = ($i ~ /:/) ? "inet6" : "inet"
+                printf "\t%s %s\n", family, $i
+            }
+        }
+    '
+}
+
+# ==============================================================================
 # YouTube Media Downloader (Legacy & Modern)
 # ==============================================================================
 
