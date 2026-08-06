@@ -3,7 +3,7 @@
 # ==============================================================================
 rbf() {
   local actions=() extra_args=() user_specified_action=false
-  local do_update=false do_update_only=false do_fmt=false do_push=false
+  local do_update=false do_update_only=false do_fmt=false do_fmt_only=false do_push=false
   local hostname="" impure_flag="--impure"
   local config_dir="" dir_owner use_sudo_for_local=false is_git=false
   local real_user git_env_flags files msg target_link gen action
@@ -24,6 +24,7 @@ Options:
   --up-only, --update-only Quickly update flake inputs and exit
   --p, --push              Push git commits to remote after successful rebuild
   --fmt, --format          Run 'nix fmt' in the flake directory before rebuilding
+  --fmt-only               Only format files in the flake directory and exit
   --hostname <name>        Specify a specific hostname configuration from the flake
 
 Extra arguments are passed to 'nixos-rebuild'.
@@ -54,6 +55,11 @@ EOF
       shift
       ;;
     --fmt | --format)
+      do_fmt=true
+      shift
+      ;;
+    --fmt-only)
+      do_fmt_only=true
       do_fmt=true
       shift
       ;;
@@ -141,7 +147,7 @@ EOF
     [[ "$is_git" == true ]] && local_cmd git add -A
   fi
 
-  if [[ "$user_specified_action" == false && ("$do_fmt" == true || "$do_update_only" == true) ]]; then
+  if [[ "$user_specified_action" == false && ("$do_update_only" == true || "$do_fmt_only" == true) ]]; then
     echo "✅ Success!"
     return 0
   fi

@@ -42,6 +42,7 @@ _rbf_completion() {
     --up-only
     --update-only
     --fmt
+    --fmt-only
     --format
     --p
     --push
