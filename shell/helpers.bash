@@ -127,7 +127,7 @@ EOF
     echo "Formatting files..."
     if ! local_cmd nix fmt 2>/dev/null; then
       echo "ℹ️  Flake has no formatter defined. Falling back to nixfmt-rfc-style..."
-      if ! local_cmd nix run "nixpkgs#nixfmt-tree"; then
+      if ! local_cmd nix run "nixpkgs#nixfmt-tree" -- "$config_dir"; then
         fail "Formatting failed."
         return 1
       fi
