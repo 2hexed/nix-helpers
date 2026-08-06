@@ -125,7 +125,13 @@ EOF
 
   if [[ "$do_fmt" == true ]]; then
     echo "Formatting files..."
-    local_cmd nix fmt
+    if ! local_cmd nix fmt 2>/dev/null; then
+      echo "ℹ️  Flake has no formatter defined. Falling back to nixfmt-rfc-style..."
+      if ! local_cmd nix run "nixpkgs#nixfmt-tree"; then
+        fail "Formatting failed."
+        return 1
+      fi
+    fi
     [[ "$is_git" == true ]] && local_cmd git add -A
   fi
 
