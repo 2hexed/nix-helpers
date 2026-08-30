@@ -131,7 +131,7 @@ EOF
 
   if [[ "$do_fmt" == true ]]; then
     echo "Formatting files..."
-    if ! local_cmd nix fmt 2>/dev/null; then
+    if ! local_cmd nix fmt 2> /dev/null; then
       echo "ℹ️  Flake has no formatter defined. Falling back to nixfmt-rfc-style..."
       if ! local_cmd nix run "nixpkgs#nixfmt-tree" -- --tree-root "$config_dir"; then
         fail "Formatting failed."
@@ -186,7 +186,11 @@ EOF
         local_cmd git push || echo "⚠️ Warning: Git push failed, but build succeeded."
       fi
 
-      echo "✅ Success! Generation $gen is now active."
+      if [[ "${actions[0]}" == "boot" ]]; then
+        echo "✅ Success! Generation $gen set as boot default (active on next reboot)."
+      else
+        echo "✅ Success! Generation $gen is now active."
+      fi
     else
       echo "✅ Success! (No Git history to update)."
     fi
@@ -206,11 +210,11 @@ EOF
 # ==============================================================================
 
 whatsmyip() {
-    local cyan='\033[1;36m'
-    local reset='\033[0m'
+  local cyan='\033[1;36m'
+  local reset='\033[0m'
 
-    # Removed 'scope global' to allow showing link-local addresses if needed
-    ip -brief addr show | awk -v c_cyan="$cyan" -v c_reset="$reset" '
+  # Removed 'scope global' to allow showing link-local addresses if needed
+  ip -brief addr show | awk -v c_cyan="$cyan" -v c_reset="$reset" '
         $1 ~ /^(lo|docker|veth|br-|vboxnet|virbr|tailscale|tun|tap|wireguard|wg)/ { next }
         $2 ~ /^UP/ && NF >= 3 {
             printf "%s> %s%s\n", c_cyan, $1, c_reset
