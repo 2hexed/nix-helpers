@@ -35,6 +35,91 @@ EOF
     echo "🛑 $*" >&2
   }
 
+  # --- Cache Recovery Helpers ---
+  purge_all_tarball_caches() {
+    echo "🧹 Purging all Nix tarball caches..."
+    rm -rf ~/.cache/nix/tarballs/ 2>/dev/null || true
+    if [[ "$EUID" -ne 0 ]]; then
+      sudo rm -rf /root/.cache/nix/tarballs/ 2>/dev/null || true
+    fi
+  }
+
+  handle_cache_corruption() {
+    echo ""
+    echo "⚠️  Detected corrupted Nix download cache (Truncated tar archive)."
+    echo "Choose how to resolve this:"
+    echo "  1) Smart repair (Scan & delete ONLY corrupted cache files - recommended)"
+    echo "  2) Full purge  (Wipe entire nix tarball cache directory)"
+    echo "  3) Skip        (Abort and handle manually)"
+    echo ""
+
+    # Prompt user for choice, defaulting to 1
+    read -rp "Select an option [1-3] (default: 1): " choice </dev/tty
+    choice=${choice:-1}
+
+    case "$choice" in
+      1)
+        echo "🔍 Scanning tarball caches for corrupted archives..."
+        local cache_dirs=("$HOME/.cache/nix/tarballs")
+        [[ "$EUID" -ne 0 ]] && cache_dirs+=("/root/.cache/nix/tarballs")
+
+        local found_corrupted=false
+        for cdir in "${cache_dirs[@]}"; do
+          [[ -d "$cdir" ]] || continue
+          while IFS= read -r file; do
+            if [[ -f "$file" ]] && ! gzip -t "$file" 2>/dev/null; then
+              echo "🧹 Removing corrupted file: $file"
+              if [[ "$cdir" == "/root/"* && "$EUID" -ne 0 ]]; then
+                sudo rm -f "$file" "$file.info" 2>/dev/null || true
+              else
+                rm -f "$file" "$file.info" 2>/dev/null || true
+              fi
+              found_corrupted=true
+            fi
+          done < <(find "$cdir" -type f 2>/dev/null)
+        done
+
+        if [[ "$found_corrupted" == false ]]; then
+          echo "⚠️  No specific corrupted file identified by scanner. Falling back to full purge."
+          purge_all_tarball_caches
+        fi
+        ;;
+      2)
+        purge_all_tarball_caches
+        ;;
+      *)
+        echo "Skipping cache cleanup."
+        return 1
+        ;;
+    esac
+  }
+
+  run_nix_with_retry() {
+    local log_file
+    log_file=$(mktemp)
+
+    # Run command and log output while streaming live to standard output
+    if "$@" 2>&1 | tee "$log_file"; then
+      rm -f "$log_file"
+      return 0
+    fi
+
+    # Intercept cache corruption error
+    if grep -q "Truncated tar archive detected" "$log_file"; then
+      rm -f "$log_file"
+      if handle_cache_corruption; then
+        echo "🔄 Retrying Nix command..."
+        "$@"
+        return $?
+      fi
+      return 1
+    fi
+
+    rm -f "$log_file"
+    return 1
+  }
+  # ------------------------------
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -143,7 +228,7 @@ EOF
 
   if [[ "$do_update" == true || "$do_update_only" == true ]]; then
     echo "Updating all flake inputs..."
-    local_cmd nix flake update
+    run_nix_with_retry local_cmd nix flake update
     [[ "$is_git" == true ]] && local_cmd git add -A
   fi
 
@@ -168,7 +253,7 @@ EOF
 
   for action in "${actions[@]}"; do
     echo "Executing NixOS $action..."
-    sudo nixos-rebuild "$action" --flake "$flake_path" "$impure_flag" "${extra_args[@]}" || {
+    run_nix_with_retry sudo nixos-rebuild "$action" --flake "$flake_path" "$impure_flag" "${extra_args[@]}" || {
       success=false
       break
     }
